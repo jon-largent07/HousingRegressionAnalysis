@@ -1,0 +1,387 @@
+---
+title: "Housing Regression Analysis"
+author: "Jonathan Largent"
+output:
+  word_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    theme: sandstone
+    highlight: zenburn
+    toc: yes
+    toc_float: yes
+    toc_depth: 2
+    df_print: kable
+    code_download: yes
+    code_folding: hide
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+---
+
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+#Libraries
+library(readr)
+library(ggplot2)
+library(glmnet)
+library(randomForest)
+library(gbm)
+library(MASS)
+library(foreach)
+library("factoextra")
+library(shiny)
+library(gam)
+library(mgcv)
+```
+
+
+## Introduction
+Utilizing a competition data set from kaggle, the goal of this project is to predict the sales price of houses using different regression techniques to find the most accurate model that can be acquired, and any important, relevant information along the way. This data is from one location, not spread out across the United States or a large sample space, which is good so there is no need in accounting for inflation that might be present in different areas. For instance, housing in Los Angeles is extremely different to that of Indianapolis or New York.<br><br>
+
+## Methods
+As mentioned previously this will be accomplished by implementing a few different regression techniques. The first of which, is a simple linear regression. This is meant to be a base model to compare specifically with the second model. The second model that will be implemented is a general additive model(GAM), the goal of which is to try and map each individual feature against the sales price and find a suitable model for each feature. The downside is that this excludes the realistic issue of correlation between features, so feature creation might be necessary in order to represent this in the GAM. Next is the LASSO regression. This method is typically used for feature selection, part of this regression takes the mass of features it's provided and pushes some of those features to zero. This is not an arbitrary selection, but based off of an addition to the function that estimated parameter values. After LASSO, the next model is ridge. Similar to the LASSO regression, this is a shrinkage method with an altered parameter equation. The final method that will be using is boosting. This is an advanced tree based method, which averages the outputs the trees produce in order to make its predictions. Boosting differs from random forest by not including all features when a given tree splits, this decreases the patterns found in greedy splits for other tree based methods and helps reduce the variance as well.<br><br>
+
+## Data Cleaning
+```{r message=FALSE, warning=FALSE}
+tr.house = read_csv("train.csv")
+ts.house = read_csv("test.csv")
+```
+
+```{r}
+dim(tr.house)
+dim(ts.house)
+```
+
+The first road block has been encountered withe the pre-split training and testing data. The testing data that was given is missing a feature, unfortunately this isn't a random feature from the data altogether, but it is actually the sale price of the house. With this feature missing, the testing split will be disregarded and the focus of this analysis will move entirely to the training data. Fortunately, there are enough entries into the training data that a new split is justifiable and there isn't much lost in this decision.
+
+### Exploratory Graphs
+```{r}
+ggplot(data = tr.house) +
+  geom_bar(mapping = aes(x = BldgType, color = BldgType))
+```
+
+This plot shows an overwhelming amount of data for 1 family homes. This would suggest that further sub-setting our data to only include 1 family homes could make the model more accurate. Since there isn't much information for the other homes present, including them in the regressions could hurt the error in the models, more than provide helpful pricing information for the single family homes.
+
+```{r}
+ggplot(data = tr.house) +
+  geom_bar(mapping = aes(x = OverallCond))
+```
+
+While this doesn't seem to exactly be a normal distribution, there does seem to be a mean in the middle of the 1-10 range which means that the scale didn't shift up as much and become something like a 5-10 scale. Based on this, there doesn't need to be any direct changes from this information.
+
+```{r}
+ggplot(data = tr.house) +
+  geom_point(mapping = aes(x = YearRemodAdd, y = SalePrice, color = OverallCond))
+```
+
+This graph suggests that there is an increase in sale price with more recent remodeled properties. Interestingly, this increased doesn't seem to mean an increase in the overall condition of the house too though. The condition seems to be distributed randomly over this plot without many clusters or groupings to note.
+
+```{r}
+ggplot(data = tr.house) +
+  geom_point(mapping = aes(x = LotArea, y = SalePrice, color = OverallCond))
+```
+
+There seems to be a minor relationship with lot area and the sale price, but a handful of outliers that almost seem to suggest more than one trend that is present. Once again, overall condition doesn't seem to indicate much. Interestingly, the largest lot has one of the lesser conditions.
+
+```{r}
+ggplot(data = tr.house) +
+  geom_point(mapping = aes(x = GrLivArea , y =SalePrice , color =YearBuilt ))
+```
+
+Looking into the general living area and the sale price, there seems to be an upward trend present in the data. Notably, the year built seems to directly effect the sale price of the houses too, this can be sen in the gradient that appears. This finding also makes sense with general knowledge of homes, more recently built homes sell for more money, they haven't had an opportunity to depreciate as much as older homes.
+
+```{r}
+ggplot(data = tr.house) +
+  geom_point(mapping = aes(x = TotalBsmtSF , y =SalePrice , color =YearBuilt ))
+```
+
+Once again, there is a linear trend present that would suggest a relationship between total basement square footage and the sale price. And again, there seems to be a relationship between sale price and the year built, but also a relationship between the total square footage of the basement and the year built, more recent years tend to have larger basements it appears.
+
+### Cutting Features
+
+```{r}
+names(tr.house)
+```
+
+Many data sets have large numbers of features, genome data for instance, but many of the features above don't seem to tell much about the actual house or give relevant information that would change the sale price of the house significantly. For instance, LotFrontage is about the length of the road in front of the property or 1stFlrSF and 2ndFlrSF which are both used to make GrLivArea. Cutting back some of these features helps clean the data set up in general, but also simplifies the regression significantly.
+
+```{r}
+house_data = subset(tr.house, BldgType == '1Fam' , c("SalePrice", "LotShape", "LandContour", "LotConfig", "HouseStyle", "OverallCond", "YearBuilt", "YearRemodAdd", "RoofStyle", "ExterCond", "Foundation", "BsmtCond", "TotalBsmtSF", "HeatingQC", "CentralAir", "LowQualFinSF", "GrLivArea", "KitchenQual", "TotRmsAbvGrd", "Fireplaces", "GarageType", "GarageCars", "WoodDeckSF", "PoolArea", "Fence", "MiscFeature", "MiscVal", "YrSold", "SaleCondition"))
+
+names(house_data)
+```
+
+Much of this feature reduction was based on prior knowledge of house values and the descriptions that were provided with the data set. The features go from 80 down to 28 in order to predict the final sale price of the house.
+
+### Adressing Missing Data
+
+The next step in cleaning is addressing missing features. The most important feature is the one we are predicting, first checking to make sure all entries do include sale price, and then moving on to check other features present.
+
+```{r}
+sum(is.na(house_data$SalePrice))
+sum(is.na(house_data))
+```
+
+Fortunately all houses are priced, but there are still 2703 missing values present within the data.
+
+```{r}
+colSums(is.na(house_data))
+```
+
+There are four culprits for this missing data, basement condition, garage type, fence, and miscelaneous features.<br><br>
+
+    BsmtCond: Evaluates the general condition of the basement
+
+       Ex	Excellent
+       Gd	Good
+       TA	Typical - slight dampness allowed
+       Fa	Fair - dampness or some cracking or settling
+       Po	Poor - Severe cracking, settling, or wetness
+       NA	No Basement
+       
+    GarageType: Garage location
+		
+       2Types	More than one type of garage
+       Attchd	Attached to home
+       Basment	Basement Garage
+       BuiltIn	Built-In (Garage part of house - typically has room above garage)
+       CarPort	Car Port
+       Detchd	Detached from home
+       NA	No Garage
+       
+    Fence: Fence quality
+		
+       GdPrv	Good Privacy
+       MnPrv	Minimum Privacy
+       GdWo	Good Wood
+       MnWw	Minimum Wood/Wire
+       NA	No Fence
+       
+    MiscFeature: Miscellaneous feature not covered in other categories
+		
+       Elev	Elevator
+       Gar2	2nd Garage (if not described in garage section)
+       Othr	Other
+       Shed	Shed (over 100 SF)
+       TenC	Tennis Court
+       NA	None
+       
+       
+Looking at the descriptions for the four features with missing values, it appears that "NA" is intended to be a categorical variable instead of denoting a missing value in the data set. This is a simple solution as these values just need to be adjusted to be factors.
+
+```{r}
+house_data$BsmtCond = as.factor(house_data$BsmtCond)
+house_data$BsmtCond = addNA(house_data$BsmtCond)
+
+house_data$GarageType = as.factor(house_data$GarageType)
+house_data$GarageType = addNA(house_data$GarageType)
+
+house_data$Fence = as.factor(house_data$Fence)
+house_data$Fence = addNA(house_data$Fence)
+
+house_data$MiscFeature = as.factor(house_data$MiscFeature)
+house_data$MiscFeature = addNA(house_data$MiscFeature)
+
+colSums(is.na(house_data))
+```
+
+It can be seen that the "missing values" are now no longer an issue and the analysis can move forward into training and testing splits.
+
+### Testing/Training Split
+```{r}
+set.seed(12)
+train = sample(1:1220, 900)
+house_train = house_data[train,]
+house_test = house_data[-train,]
+```
+
+The training set will be comprised of 900 values and the testing set will be the remaining 320 values. The seed was also set in this split to ensure that future splits get the same results and errors that will be addressed later in the project do not change.
+
+```{r}
+house_train$LotShape = as.factor(house_train$LotShape)
+house_train$LandContour = as.factor(house_train$LandContour)
+house_train$LotConfig = as.factor(house_train$LotConfig)
+house_train$HouseStyle = as.factor(house_train$HouseStyle)
+house_train$RoofStyle = as.factor(house_train$RoofStyle)
+house_train$ExterCond = as.factor(house_train$ExterCond)
+house_train$Foundation = as.factor(house_train$Foundation)
+house_train$HeatingQC = as.factor(house_train$HeatingQC)
+house_train$CentralAir = as.factor(house_train$CentralAir)
+house_train$KitchenQual = as.factor(house_train$KitchenQual)
+house_train$SaleCondition = as.factor(house_train$SaleCondition)
+
+house_test$LotShape = as.factor(house_test$LotShape)
+house_test$LandContour = as.factor(house_test$LandContour)
+house_test$LotConfig = as.factor(house_test$LotConfig)
+house_test$HouseStyle = as.factor(house_test$HouseStyle)
+house_test$RoofStyle = as.factor(house_test$RoofStyle)
+house_test$ExterCond = as.factor(house_test$ExterCond)
+house_test$Foundation = as.factor(house_test$Foundation)
+house_test$HeatingQC = as.factor(house_test$HeatingQC)
+house_test$CentralAir = as.factor(house_test$CentralAir)
+house_test$KitchenQual = as.factor(house_test$KitchenQual)
+house_test$SaleCondition = as.factor(house_test$SaleCondition)
+```
+
+
+## Model Implementation & Results {.tabset .tabset-pills}
+
+### Linear Regression
+```{r}
+models = c('Linear', 'GAM', 'LASSO', 'Ridge', 'Boosting')
+lm.house = lm(SalePrice ~ ., data=house_train)
+summary(lm.house)
+```
+
+This initial model suggests that the sale condition(SaleCondition), number of cars that fit in the garage(GarageCars), square footage of the deck(WoodDeckSF), number of fireplaces(Fireplaces), kitchen quality(KitchenQual), square footage of the general living area(GrLivArea), the amount of space that has a low quality finish(LowQualFinSF), overall condition(OveralCond), total basement square footage(TotalBsmtSF), year built(YearBuilt), land contour(LandContour), and lot shape(LotShape) are all important to predicting the selling price of the house. Moving forward I will be using these to build another model.
+
+```{r}
+lm.house2 = lm(SalePrice ~ GarageCars + SaleCondition + WoodDeckSF + Fireplaces + KitchenQual + GrLivArea + LowQualFinSF + OverallCond + TotalBsmtSF + YearBuilt + LandContour + LotShape, data = house_train)
+summary(lm.house2)
+```
+
+We essentially have the same model, with minor losses in the adjusted r-squared value. Now some more fine tuning, where lot shape(LotShape), sale condition(SaleCondition), land contour(LandContour), low quality finish area(LowQualFinSF), and wood deck square footage(WoodDeckSF) are also removed.
+
+```{r}
+lm.house3 = lm(SalePrice ~ GarageCars + Fireplaces + KitchenQual + GrLivArea + OverallCond + TotalBsmtSF + YearBuilt, data = house_train)
+summary(lm.house3)
+```
+
+This model is comprised of significant features that result in an understanding of approximately 81% of the variance in the data. While this does go down from previous models, it is a minor change for a much simpler regression than before. These final parameters will also be used for the general additive model that we are going to build.
+
+```{r}
+preds=predict(lm.house3,newdata=house_test)
+error = sqrt(mean(( preds-house_test$SalePrice)^2))
+```
+
+
+
+### GAM
+```{r}
+par(mfrow = c(2,3))
+ggplot(data = house_data) +
+  geom_point(mapping = aes(x = GrLivArea, y = SalePrice, color = OverallCond))
+ggplot(data = house_data) +
+  geom_point(mapping = aes(x = TotalBsmtSF, y = SalePrice, color = OverallCond))
+ggplot(data = house_data) +
+  geom_point(mapping = aes(x = GarageCars, y = SalePrice, color = OverallCond))
+ggplot(data = house_data) +
+  geom_point(mapping = aes(x = KitchenQual, y = SalePrice, color = OverallCond))
+ggplot(data = house_data) +
+  geom_point(mapping = aes(x = YearBuilt, y = SalePrice, color = OverallCond))
+ggplot(data = house_data) +
+  geom_point(mapping = aes(x = Fireplaces, y = SalePrice, color = OverallCond))
+```
+
+Based on the scatter plots above, year built and general living area will be fitted using splines while the other variables will remain linear.
+
+```{r}
+gam.model = gam(SalePrice ~ s(YearBuilt) + Fireplaces + TotalBsmtSF + GarageCars + KitchenQual + s(GrLivArea), data=house_train)
+plot(gam.model, se=TRUE,col="blue")
+```
+
+There isn't an overwhelming amount of variance at the extremes of the plot which would suggest that the general splines are a good fit, and that natural splines aren't necessary.
+
+```{r}
+summary(gam.model)
+```
+Looking at the summary, it can be seen there is an increase in the adjusted r squared implying that more of the variance present in the data is explained in the model. Overall implying that this model is a good fit for the data.
+
+```{r}
+preds=predict(gam.model,newdata=house_test)
+error = c(error, sqrt(mean(( preds-house_test$SalePrice)^2)))
+```
+
+
+### LASSO Regression
+```{r}
+y = house_data$SalePrice
+x = model.matrix(SalePrice ~ ., house_data)[,-1]
+
+lasso.mod=glmnet(x[train ,],y[ train],alpha=1)
+plot(lasso.mod)
+```
+
+This plot depicts the parameter values being pushed to zero. This norm is actually how they are pushed to zero instead of just approaching zero like ridge regression. Lambda will need to be calculated in order to determine where to draw the line that will decide which features to select for the model and which to exclude.
+
+```{r}
+set.seed(1)
+y.test = y[-train]
+cv.out=cv.glmnet(x[train ,],y[ train],alpha=1)
+plot(cv.out)
+bestlam =cv.out$lambda.min
+```
+The minimum MSE value is marked with the left dotted line and the apropriate lambda value can be found now and used moving forward.
+
+```{r}
+lasso.pred=predict (lasso.mod ,s=bestlam ,newx=x[-train ,])
+error = c(error, sqrt(mean((lasso.pred -y.test)^2)))
+```
+
+
+```{r}
+out=glmnet (x,y,alpha=1)
+lasso.coef=predict (out ,type="coefficients",s= bestlam) [1:20,]
+lasso.coef[lasso.coef!=0 ]
+```
+Unlike linear regression and the GAM, LASSO is known for feature selection or shrinkage. Based on this output, the model chose lot shape(LotShape), land contour(LandContour), lot configuration(LotConfig), home style(HouseStyle), overall condition(OverallCond) and the year the home was built(YearBuilt) to build the model. There is a little overlap from the linear regression and GAM, but not much. Surprisingly it got similar results as the GAM. This could imply that overall condition and year built were extremely important to the sales price.
+
+### Ridge Regression
+```{r}
+ridge.mod=glmnet(x[train ,],y[ train],alpha=0)
+plot(ridge.mod)
+```
+
+As mentioned with the lasso regression, the ridge regression has coefficients approach zero, shrinking the parameters, but not actually making feature selection, because they don't completely converge to 0. 
+
+```{r}
+set.seed(1)
+y.test = y[-train]
+cv.out=cv.glmnet(x[train ,],y[ train],alpha=0)
+plot(cv.out)
+bestlam =cv.out$lambda.min
+```
+Lambda is still needed in order to move forward, this is a similar story to the lasso regression where the lambda associated with the minimum MSE is the desired choice.
+
+```{r}
+out=glmnet (x,y,alpha=0)
+lasso.coef=predict (out ,type="coefficients",s= bestlam)
+lasso.coef
+```
+When looking at the feature list it can be noticed this phenomenon where values are effectively zero, especially in comparison to each other, but aren't quite zero.
+
+
+```{r}
+ridge.pred=predict (ridge.mod ,s=bestlam ,newx=x[-train ,])
+error = c(error, sqrt(mean((ridge.pred -y.test)^2)))
+```
+
+### Boosting
+```{r}
+set.seed(1)
+boost.house =gbm(SalePrice~.,data=house_train, distribution="gaussian", n.trees = 500 , interaction.depth = 4)
+summary(boost.house)
+```
+
+Looking at the variable importance that is provided by the boosting method, year built and overall condition don't seem to make much impact. Year built is significant, in that it isn't close to zero, but is after one of the major drop offs. Overall condition is rather close to 1, indicating that for this method there weren't many important splits being made that used this feature
+
+```{r}
+yhat.boost=predict(boost.house ,newdata = house_test, n.trees = 500)
+error = c(error, sqrt(mean(( yhat.boost-house_test$SalePrice)^2)))
+```
+
+## Conclusion
+```{r}
+con = data.frame(models, error)
+con
+```
+
+Looking at the models that were used for this analysis, it is easily noted that the boosting method was the most helpful at actual predictions when it came to error, with other models tested had errors above 40,000. Having error in the tens of thousands isn't ideal, but factors to consider are the variability in housing sales, whether the market was booming or not. The data itself doesn't have the dates present in order to assess the differences in the housing market. Other differences can easily come from going back and forth with offers for houses and moving the price up or down. An ideal error, would probably be closer to 25,000 for the price fluctuation due to negotiation. The differences based on the housing market are harder to account for. <br><br>
+
+Comparing the simple linear regression and the GAM, there is a significant decrease in the error present in the model. This is most likely due to the ability of the GAM, which lets each feature be mapped individually for the most ideal representation. Looking at the LASSO and ridge regression, there is a minimal difference between the two. They both actually performed worse than the linear regression that was modeled. The ideal model for predicting house sale prices would definitely be the one that utilized boosting; however, if interpretability is desired GAM is the desired model. <br><br>
+
+Looking at making improvements to this analysis. Refining the initial feature selection and including features that weren't initially desired would be an option. Quite a few oddly specific features were excluded, but could be hidden gems for this analysis.
+
+
+
